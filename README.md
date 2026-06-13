@@ -1,6 +1,6 @@
 # Daynote · 自动日报
 
-Windows 桌面端的本地窗口活动记录与日/周/月报生成工具。纯本地运行，不联网、不上传数据。
+Windows 桌面端的本地窗口活动记录与日/周/月报生成工具。纯本地运行。
 
 - 后端：Rust + Tauri 2
 - 前端：React + TypeScript + Vite
