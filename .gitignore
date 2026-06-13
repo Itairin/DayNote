@@ -1,0 +1,34 @@
+# === Build artifacts ===
+/dist/
+/src-tauri/target/
+/src-tauri/gen/
+
+# === Dependencies ===
+/node_modules/
+
+# === Logs / temp ===
+*.log
+bundle_build.log
+_tmp*
+_probe.py
+_genicons.py
+_patch.py
+_patch_settings.py
+_diag.py
+
+# === Editor / OS ===
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# === Codex / agent local cache ===
+.superpowers/
+.learnings/
+.agents/
+.codex/
+
+# === Local user data (never commit DB / exports) ===
+*.db
+*.db-journal
+/backups/
