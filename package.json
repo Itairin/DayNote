@@ -1,13 +1,16 @@
 {
   "name": "daynote",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:app": "tauri build -- --no-bundle && node scripts/verify-build.mjs",
+    "build:installer": "tauri build -- --bundles nsis && node scripts/verify-build.mjs",
+    "verify:build": "node scripts/verify-build.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",
