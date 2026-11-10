@@ -42,8 +42,38 @@ fn get_today_summary(state: State<'_, AppState>) -> String {
         Ok(v) => {
             let mut s = v;
             let total = s["total_focus_secs"].as_i64().unwrap_or(0);
-            let score = if total > 0 { (((total as f64) / (8.0 * 3600.0) * 100.0).round() as i32).min(100) } else { 0 };
-            s["efficiency_score"] = serde_json::json!(score);
+            // 效率分 = 有效工作占比。旧算法是「总时长 / 8 小时」，方向是反的：
+            // 挂机一整天拿满分，认真干 5 小时反而只有 62 分。现在改成按分类加权，
+            // 并返回 null 表示"数据不足，不评分"，而不是编一个 85 分。
+            let (score, productive_secs, entertainment_secs) = match s["window_stats"].as_array() {
+                Some(stats) if total > 0 => {
+                    let mut productive = 0i64;
+                    let mut entertainment = 0i64;
+                    for item in stats {
+                        let proc = item["process_name"].as_str().unwrap_or("");
+                        let dur = item["duration_secs"].as_i64().unwrap_or(0);
+                        match crate::db::app_category(&crate::db::app_display_name(proc, "")) {
+                            "开发" | "文档" | "设计" | "命令行" | "AI" | "邮件" => productive += dur,
+                            "娱乐" | "游戏" => entertainment += dur,
+                            _ => {}
+                        }
+                    }
+                    // 有效工作占比越高分越高；娱乐占比按 50% 权重扣减
+                    let p = productive as f64 / total as f64;
+                    let e = entertainment as f64 / total as f64;
+                    let raw = (p - e * 0.5).max(0.0);
+                    (Some(((raw * 100.0).round() as i32).clamp(0, 100)), productive, entertainment)
+                }
+                _ => (None, 0, 0),
+            };
+            s["efficiency_score"] = match score {
+                Some(v) => serde_json::json!(v),
+                None => serde_json::Value::Null,
+            };
+            s["productive_secs"] = serde_json::json!(productive_secs);
+            s["entertainment_secs"] = serde_json::json!(entertainment_secs);
+            // 记录时长和"累计活动"是同一件事，统一口径，避免同一个数在三个地方叫三个名字
+            s["total_activity_secs"] = serde_json::json!(total);
             s.to_string()
         }
         Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
@@ -58,6 +88,25 @@ fn generate_daily_report(concise: Option<bool>, state: State<'_, AppState>) -> S
         Ok(ref records) => report::ReportGenerator::generate_daily_report(records, concise.unwrap_or(false)),
         Err(_) => String::from("# 今日总结\n\n暂无数据"),
     }
+}
+
+/// 生成可编辑的日报草稿（三段式 + 时间线素材），并带上当天番茄钟数据。
+/// 之前番茄钟和活动记录是两套互不相干的数据，番茄永远不会出现在任何报告里。
+#[tauri::command]
+fn generate_daily_draft(date: Option<String>, state: State<'_, AppState>) -> String {
+    let day = date.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+    let db = state.db.lock().unwrap();
+    let records = db.get_records_by_date(&day).unwrap_or_default();
+    let (pomo_count, pomo_secs) = db
+        .pomodoro_today(&day)
+        .map(|v| {
+            (
+                v["focus_completed"].as_i64().unwrap_or(0),
+                v["total_focus_secs"].as_i64().unwrap_or(0),
+            )
+        })
+        .unwrap_or((0, 0));
+    report::ReportGenerator::generate_daily_draft(&records, pomo_count, pomo_secs)
 }
 
 #[tauri::command]
@@ -128,20 +177,45 @@ fn delete_record(id: i32, state: State<'_, AppState>) -> String {
 }
 
 #[tauri::command]
-fn set_close_to_tray(enabled: bool, state: State<'_, PreferenceState>) -> String {
+fn set_close_to_tray(enabled: bool, state: State<'_, PreferenceState>, app_state: State<'_, AppState>) -> String {
     *state.close_to_tray.lock().unwrap() = enabled;
+    if let Ok(db) = app_state.db.lock() {
+        let _ = db.setting_set("close_to_tray", if enabled { "1" } else { "0" });
+    }
     serde_json::json!({ "close_to_tray": enabled }).to_string()
 }
 
+/// 统计按当前保留期会被删除的条数，供前端确认弹窗使用（不执行删除）。
 #[tauri::command]
-fn set_privacy_rules(rules: Vec<String>, state: State<'_, PreferenceState>) -> String {
+fn count_expired_records(retention_days: i64, state: State<'_, AppState>) -> String {
+    match state.db.lock().unwrap().count_older_than(retention_days) {
+        Ok(n) => serde_json::json!({ "count": n }).to_string(),
+        Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
+    }
+}
+
+#[tauri::command]
+fn set_privacy_rules(
+    rules: Vec<String>,
+    state: State<'_, PreferenceState>,
+    app_state: State<'_, AppState>,
+) -> String {
     if let Ok(mut guard) = state.privacy_rules.lock() {
         *guard = rules
             .into_iter()
             .map(|rule| rule.trim().to_string())
             .filter(|rule| !rule.is_empty())
             .collect();
-        serde_json::json!({ "count": guard.len() }).to_string()
+        let snapshot = guard.clone();
+        let count = snapshot.len();
+        drop(guard);
+        // 落盘，重启后隐私规则还在；monitor 每轮都会重新读取这份列表
+        if let Ok(db) = app_state.db.lock() {
+            if let Ok(json) = serde_json::to_string(&snapshot) {
+                let _ = db.setting_set("privacy_rules", &json);
+            }
+        }
+        serde_json::json!({ "count": count }).to_string()
     } else {
         serde_json::json!({ "error": "lock" }).to_string()
     }
@@ -235,7 +309,7 @@ fn export_all_data(format: String, state: State<'_, AppState>, pref: State<'_, P
 }
 
 #[tauri::command]
-fn set_export_dir(dir: Option<String>, state: State<'_, PreferenceState>) -> String {
+fn set_export_dir(dir: Option<String>, state: State<'_, PreferenceState>, app_state: State<'_, AppState>) -> String {
     let cleaned = dir.and_then(|d| {
         let trimmed = d.trim().to_string();
         if trimmed.is_empty() { None } else { Some(trimmed) }
@@ -247,6 +321,9 @@ fn set_export_dir(dir: Option<String>, state: State<'_, PreferenceState>) -> Str
     }
     if let Ok(mut guard) = state.export_dir.lock() {
         *guard = cleaned.clone();
+    }
+    if let Ok(db) = app_state.db.lock() {
+        let _ = db.setting_set("export_dir", cleaned.as_deref().unwrap_or(""));
     }
     let effective = cleaned
         .clone()
@@ -444,9 +521,19 @@ fn pomodoro_get_today(state: State<'_, AppState>) -> String {
 }
 
 #[tauri::command]
-fn set_notification_settings(enabled: bool, time: String, state: State<'_, PreferenceState>) -> String {
+fn set_notification_settings(
+    enabled: bool,
+    time: String,
+    state: State<'_, PreferenceState>,
+    app_state: State<'_, AppState>,
+) -> String {
     if let Ok(mut g) = state.notify_enabled.lock() { *g = enabled; }
     if let Ok(mut g) = state.notify_time.lock() { *g = time.clone(); }
+    // 落盘：之前这些偏好只存在内存里，重启就回到 22:00 / 备份默认开
+    if let Ok(db) = app_state.db.lock() {
+        let _ = db.setting_set("notify_enabled", if enabled { "1" } else { "0" });
+        let _ = db.setting_set("notify_time", &time);
+    }
     serde_json::json!({"ok": true, "enabled": enabled, "time": time}).to_string()
 }
 
@@ -458,8 +545,11 @@ fn get_notification_settings(state: State<'_, PreferenceState>) -> String {
 }
 
 #[tauri::command]
-fn set_backup_settings(enabled: bool, state: State<'_, PreferenceState>) -> String {
+fn set_backup_settings(enabled: bool, state: State<'_, PreferenceState>, app_state: State<'_, AppState>) -> String {
     if let Ok(mut g) = state.backup_enabled.lock() { *g = enabled; }
+    if let Ok(db) = app_state.db.lock() {
+        let _ = db.setting_set("backup_enabled", if enabled { "1" } else { "0" });
+    }
     serde_json::json!({"ok": true, "enabled": enabled}).to_string()
 }
 
@@ -490,19 +580,33 @@ fn perform_backup(app: &tauri::AppHandle) -> Result<String, String> {
         return Err("数据库文件不存在".to_string());
     }
     // 决定备份目录: 优先用导出目录的 backups 子目录, 否则用 data_local_dir/daynote/backups
+    // 备份默认落到「文档」目录而不是 AppData：换电脑、重装系统时 AppData 第一个丢，
+    // 备份放在那里等于没有备份。
     let backup_dir = if let Some(state) = app.try_state::<PreferenceState>() {
         let custom = state.export_dir.lock().ok().and_then(|g| g.clone());
         match custom {
             Some(d) => std::path::PathBuf::from(d).join("backups"),
-            None => data_dir.join("backups"),
+            None => dirs::document_dir()
+                .or_else(dirs::home_dir)
+                .unwrap_or(data_dir)
+                .join("DaynoteBackups"),
         }
     } else {
-        data_dir.join("backups")
+        dirs::document_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or(data_dir)
+            .join("DaynoteBackups")
     };
     std::fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
-    let stamp = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let stamp = chrono::Local::now().format("%Y-%m-%d_%H%M%S").to_string();
     let target = backup_dir.join(format!("daynote_backup_{}.db", stamp));
-    std::fs::copy(&db_path, &target).map_err(|e| e.to_string())?;
+    // VACUUM INTO 生成一致性快照；std::fs::copy 直接拷正在写的库可能页级撕裂，备份打不开。
+    if let Some(state) = app.try_state::<AppState>() {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.backup_to(&target).map_err(|e| e.to_string())?;
+    } else {
+        return Err("无法访问数据库状态".to_string());
+    }
     let path_str = target.to_string_lossy().to_string();
     // 更新 last_backup
     if let Some(state) = app.try_state::<PreferenceState>() {
@@ -551,7 +655,9 @@ async fn notification_loop(app: tauri::AppHandle) {
         } else { (false, "22:00".to_string()) };
         if !enabled { continue; }
         if today == last_notified_date { continue; }
-        if now_hm != target_time { continue; }
+        // 用"已过目标时间"而不是"正好等于目标分钟"判断：
+        // 之前只要那一刻进程被挂起/系统休眠跨过那一分钟，当天通知就永远不来。
+        if now_hm < target_time { continue; }
         // 触发通知
         let total_secs = if let Some(state) = app.try_state::<AppState>() {
             state.db.lock().ok()
@@ -630,6 +736,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         )
                         .title("Daynote")
                         .build() {
+                            if let Some(img) = icon::load_window_icon() {
+                                let _ = window.set_icon(img);
+                            }
                             let _ = window.set_focus();
                         }
                     }
@@ -681,7 +790,30 @@ pub fn run() {
     // 启动时清理一次历史乱码/超长 URL 记录
     let _ = database.delete_garbage();
 
+    // 启动回灌持久化偏好。之前偏好全在内存里，重启就回到默认值
+    // （通知时间变回 22:00、备份开关回开、隐私规则全丢）。
+    let prefs = database.settings_all().unwrap_or_default();
+    let pref_bool = |k: &str, d: bool| prefs.get(k).map(|v| v == "1").unwrap_or(d);
+    let pref_str = |k: &str, d: &str| prefs.get(k).cloned().unwrap_or_else(|| d.to_string());
+    let loaded_privacy: Vec<String> = prefs
+        .get("privacy_rules")
+        .and_then(|v| serde_json::from_str::<Vec<String>>(v).ok())
+        .unwrap_or_default();
+    let loaded_close = pref_bool("close_to_tray", true);
+    let loaded_notify_enabled = pref_bool("notify_enabled", true);
+    let loaded_notify_time = pref_str("notify_time", "22:00");
+    let loaded_backup_enabled = pref_bool("backup_enabled", true);
+    let loaded_export_dir = prefs.get("export_dir").filter(|v| !v.is_empty()).cloned();
+
     tauri::Builder::default()
+        // 单实例：第二个实例只把已有窗口叫出来，避免两套 monitor 并行导致时长翻倍
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![])))
         .plugin(tauri_plugin_notification::init())
@@ -689,12 +821,12 @@ pub fn run() {
             db: Mutex::new(database),
         })
         .manage(PreferenceState {
-            close_to_tray: Mutex::new(true),
-            privacy_rules: Mutex::new(Vec::new()),
-            export_dir: Mutex::new(None),
-            notify_enabled: Mutex::new(true),
-            notify_time: Mutex::new("22:00".to_string()),
-            backup_enabled: Mutex::new(true),
+            close_to_tray: Mutex::new(loaded_close),
+            privacy_rules: Mutex::new(loaded_privacy),
+            export_dir: Mutex::new(loaded_export_dir),
+            notify_enabled: Mutex::new(loaded_notify_enabled),
+            notify_time: Mutex::new(loaded_notify_time),
+            backup_enabled: Mutex::new(loaded_backup_enabled),
             backup_last: Mutex::new(String::new()),
             backup_last_path: Mutex::new(String::new()),
         })
@@ -703,11 +835,13 @@ pub fn run() {
             get_today_summary,
             generate_daily_report,
             generate_daily_report_for_date,
+            generate_daily_draft,
             get_weekly_app_usage,
             generate_weekly_report,
             get_month_app_usage,
             generate_monthly_report,
             cleanup_old_records,
+            count_expired_records,
             get_recent_days,
             delete_record,
             set_close_to_tray,
@@ -745,7 +879,15 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let _ = setup_tray(app);
+            // 托盘创建失败时不能静默吞掉：那样用户点 X 之后窗口隐藏、
+            // 进程还在记录，却没有任何入口能把它找回来或退出。
+            if let Err(e) = setup_tray(app) {
+                log::error!("tray setup failed: {}", e);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 monitor::start_monitoring(handle).await;
@@ -758,6 +900,12 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 backup_loop(h3).await;
             });
+            // Force runtime window icon to the new logo (avoids stale taskbar cache)
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(img) = icon::load_window_icon() {
+                    let _ = window.set_icon(img);
+                }
+            }
             // 窗口按需创建，启动时不创建以避开 WebView2 进程冲突
             Ok(())
         })

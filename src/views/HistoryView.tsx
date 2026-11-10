@@ -17,26 +17,30 @@ export default function HistoryView() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [dayApps, setDayApps] = useState<Record<string, AppItem[]>>({});
   const [dayLoading, setDayLoading] = useState<Record<string, boolean>>({});
+  // 以前加载失败会被缓存成空数组，那天就永远显示"暂无记录"，收起再展开也不重试。
+  const [dayError, setDayError] = useState<Record<string, string>>({});
 
   useEffect(() => { fetchRecentDays(days); }, [days, fetchRecentDays]);
 
-  const loadDayUsage = useCallback(async (date: string) => {
-    if (dayApps[date]) return;
+  const loadDayUsage = useCallback(async (date: string, force = false) => {
+    if (!force && (dayApps[date] || dayError[date])) return;
     setDayLoading((prev) => ({ ...prev, [date]: true }));
+    setDayError((prev) => { const n = { ...prev }; delete n[date]; return n; });
     try {
       const raw = await invoke<string>("get_weekly_app_usage", { startDate: date });
       const parsed = JSON.parse(raw);
+      if (parsed?.error) throw new Error(String(parsed.error));
       const found = (parsed.days || []).find((d: any) => d.date === date);
       const apps: AppItem[] = (found?.apps || []).map((a: any) => ({
         app_name: a.app_name, duration_secs: a.duration_secs,
       }));
       apps.sort((a, b) => b.duration_secs - a.duration_secs);
       setDayApps((prev) => ({ ...prev, [date]: apps }));
-    } catch {
-      setDayApps((prev) => ({ ...prev, [date]: [] }));
+    } catch (e: any) {
+      setDayError((prev) => ({ ...prev, [date]: e?.message || "加载失败" }));
     }
     setDayLoading((prev) => ({ ...prev, [date]: false }));
-  }, [dayApps]);
+  }, [dayApps, dayError]);
 
   const toggleDay = (date: string) => {
     if (expanded === date) {
@@ -87,6 +91,11 @@ export default function HistoryView() {
                   <div style={{ padding: "4px 16px 14px 36px", borderTop: "1px solid var(--border-light)" }}>
                     {isDayLoading ? (
                       <div style={{ padding: "12px 0", color: "var(--text-muted)", fontSize: 13 }}>加载中...</div>
+                    ) : dayError[date] ? (
+                      <div style={{ padding: "12px 0", fontSize: 13, color: "var(--danger)" }}>
+                        加载失败：{dayError[date]}
+                        <button className="nav-item" style={{ marginLeft: 8 }} onClick={() => loadDayUsage(date, true)}>重试</button>
+                      </div>
                     ) : !apps || apps.length === 0 ? (
                       <div style={{ padding: "12px 0", color: "var(--text-muted)", fontSize: 13 }}>暂无应用记录</div>
                     ) : (

@@ -31,6 +31,165 @@ impl ReportGenerator {
         }
     }
 
+    /// 可编辑的日报草稿：三段式模板 + 时间线素材。
+    ///
+    /// 这是整个产品唯一的差异点所在——用户要的不是"应用时长清单"，
+    /// 而是一份能直接粘进工作群的东西。所以草稿里先给三段人话
+    /// （今日完成 / 进行中 / 明日计划），时间线只作为可参考的素材附在后面。
+    pub fn generate_daily_draft(
+        records: &[serde_json::Value],
+        pomodoro_count: i64,
+        pomodoro_secs: i64,
+    ) -> String {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let weekday = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+            [(Local::now().format("%w").to_string().parse::<usize>().unwrap_or(0)) % 7];
+
+        let merged = Self::merge_adjacent_records(records);
+        let total: i64 = merged.iter().map(|e| e.duration_secs).sum();
+
+        let mut report = String::new();
+        report.push_str(&format!("# 日报 {} {}
+
+", today, weekday));
+
+        // ---- 三段式正文，留白给用户填 ----
+        report.push_str("## 今日完成
+
+");
+        let mut written = false;
+        for (label, items) in Self::draft_candidates(&merged) {
+            if items.is_empty() {
+                continue;
+            }
+            report.push_str(&format!("{}：{}
+", label, items.join("、")));
+            written = true;
+        }
+        if !written {
+            report.push_str("- 
+");
+        }
+        report.push_str("
+## 进行中
+
+- 
+");
+        report.push_str("
+## 明日计划
+
+- 
+");
+
+        // ---- 素材区：给用户回忆用的时间线 ----
+        report.push_str("
+---
+
+### 时间线素材（可删）
+
+");
+        if merged.is_empty() {
+            report.push_str("暂无活动记录
+");
+        } else {
+            report.push_str(&format!("```text
+记录总时长 {}
+", Self::fmt_duration(total)));
+            if pomodoro_count > 0 {
+                report.push_str(&format!(
+                    "番茄 {} 个 · 专注 {}
+",
+                    pomodoro_count,
+                    Self::fmt_duration(pomodoro_secs)
+                ));
+            }
+            report.push_str("```
+
+");
+
+            // 按分类聚合出"做过什么"，比逐条窗口标题更接近人话
+            let mut by_cat: BTreeMap<&str, i64> = BTreeMap::new();
+            for e in &merged {
+                *by_cat.entry(e.category.as_str()).or_insert(0) += e.duration_secs;
+            }
+            let mut cats: Vec<_> = by_cat.into_iter().collect();
+            cats.sort_by(|a, b| b.1.cmp(&a.1));
+            report.push_str("```text
+");
+            for (cat, secs) in cats {
+                report.push_str(&format!(
+                    "{}  {}  {}
+",
+                    category_emoji(cat),
+                    Self::pad_right(cat, 8),
+                    Self::fmt_duration(secs)
+                ));
+            }
+            report.push_str("```
+
+");
+
+            // 关键时间点：只挑 5 分钟以上的，避免刷屏
+            report.push_str("```text
+");
+            for e in merged.iter().filter(|e| e.duration_secs >= 300).take(20) {
+                let st = e.start_time.get(11..16).unwrap_or("");
+                let et = e.end_time.get(11..16).unwrap_or("");
+                report.push_str(&format!(
+                    "{} - {}  {}  {}
+",
+                    st,
+                    et,
+                    category_emoji(&e.category),
+                    e.display_title
+                ));
+            }
+            report.push_str("```
+");
+        }
+
+        report
+    }
+
+    /// 从时间线里提炼"可能做了什么"，按分类给出可编辑的候选条目。
+    fn draft_candidates(merged: &[ReportEntry]) -> Vec<(&'static str, Vec<String>)> {
+        let mut dev: Vec<String> = Vec::new();
+        let mut doc: Vec<String> = Vec::new();
+        let mut comm: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for e in merged.iter().filter(|e| e.duration_secs >= 600) {
+            let key = format!("{}::{}", e.category, e.display_title);
+            if !seen.insert(key) {
+                continue;
+            }
+            match e.category.as_str() {
+                "开发" | "命令行" | "AI" | "设计" => {
+                    if dev.len() < 5 {
+                        dev.push(e.display_title.clone());
+                    }
+                }
+                "文档" | "邮件" => {
+                    if doc.len() < 4 {
+                        doc.push(e.display_title.clone());
+                    }
+                }
+                "沟通" => {
+                    if comm.len() < 4 {
+                        comm.push(e.display_title.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        vec![
+            ("开发", dev),
+            ("文档", doc),
+            ("沟通", comm),
+        ]
+    }
+
     pub fn generate_weekly_report(start_date: &str, days: &[serde_json::Value], concise: bool) -> String {
         if concise {
             Self::generate_weekly_concise(start_date, days)
@@ -74,7 +233,7 @@ impl ReportGenerator {
         let mut report = String::new();
         report.push_str(&format!("# 周报简明 {} 起\n\n", start_date));
         report.push_str(&format!("## 一周总计 · {}\n\n", Self::fmt_duration(total_secs)));
-        report.push_str("`	ext\n");
+        report.push_str("```text\n");
         for (n, c, d) in &items {
             report.push_str(&format!("{}  {}  {}\n", category_emoji(c), Self::pad_right(n, pad), Self::fmt_duration(*d)));
         }
@@ -109,7 +268,7 @@ impl ReportGenerator {
         let mut report = String::new();
         report.push_str(&format!("# 月报简明 {:04}-{:02}\n\n", year, month));
         report.push_str(&format!("## 本月总计 · {}\n\n", Self::fmt_duration(total_secs)));
-        report.push_str("`	ext\n");
+        report.push_str("```text\n");
         for (n, c, d) in &items {
             report.push_str(&format!("{}  {}  {}\n", category_emoji(c), Self::pad_right(n, pad), Self::fmt_duration(*d)));
         }
@@ -271,7 +430,7 @@ impl ReportGenerator {
                 }
                 items.sort_by(|a, b| b.2.cmp(&a.2));
                 let pad = Self::char_width_by_list(&items);
-                report.push_str("`	ext\n");
+                report.push_str("```text\n");
                 for (n, c, d) in items {
                     report.push_str(&format!("{}  {}  {}\n", category_emoji(c), Self::pad_right(n, pad), Self::fmt_duration(d)));
                 }
@@ -304,7 +463,7 @@ impl ReportGenerator {
                 }
                 items.sort_by(|a, b| b.2.cmp(&a.2));
                 let pad = Self::char_width_by_list(&items);
-                report.push_str("`	ext\n");
+                report.push_str("```text\n");
                 for (n, c, d) in items {
                     report.push_str(&format!("{}  {}  {}\n", category_emoji(c), Self::pad_right(n, pad), Self::fmt_duration(d)));
                 }

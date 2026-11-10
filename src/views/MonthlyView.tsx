@@ -74,8 +74,15 @@ export default function MonthlyView() {
     
   };
 
+  const [copied, setCopied] = useState<"" | "ok" | "fail">("");
   const handleCopy = async () => {
-    try { await navigator.clipboard.writeText(report); } catch {}
+    try {
+      await navigator.clipboard.writeText(report);
+      setCopied("ok");
+    } catch {
+      setCopied("fail");
+    }
+    setTimeout(() => setCopied(""), 2000);
   };
 
   const totalForColor = Math.max(monthTotal / monthEndDay, 1);
@@ -130,7 +137,10 @@ export default function MonthlyView() {
     loading ? React.createElement("div", { className: "empty-state" }, React.createElement("p", null, "正在加载")) : null,
     showReport && report ? React.createElement("div", { style: { marginTop: 20 } },
       React.createElement("div", { className: "report-preview" }, report),
-      React.createElement("button", { className: "copy-btn", style: { height: 32 }, onClick: handleCopy }, "\uD83D\uDCCB 复制" + (popupMode === "monthly" ? "月报" : "日报"))
+      React.createElement("button", { className: "copy-btn", style: { height: 32 }, onClick: handleCopy }, "\uD83D\uDCCB 复制" + (popupMode === "monthly" ? "月报" : "日报")),
+      copied ? React.createElement("span", { className: "copy-hint " + (copied === "ok" ? "ok" : "fail") },
+        copied === "ok" ? "已复制" : "复制失败，请手动选中")
+        : null
     ) : null,
     showPopup ? React.createElement("div", { className: "popup-overlay", onClick: () => setShowPopup(false) },
       React.createElement("div", { className: "popup-card", onClick: (e: any) => e.stopPropagation() },

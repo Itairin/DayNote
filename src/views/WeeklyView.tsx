@@ -10,8 +10,14 @@ function parseDate(v: string): Date {
   const parts = v.split("-").map(Number);
   return new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1);
 }
+// 周一为一周第一天。以前用 getDay()（周日=0），国内用户周一上班
+// 看到的是"周日 起"的一周，跨了两周的工作。
 function startOfWeek(d: Date) {
-  const n = new Date(d); n.setDate(n.getDate() - n.getDay()); n.setHours(0, 0, 0, 0); return n;
+  const n = new Date(d);
+  const offset = (n.getDay() + 6) % 7;
+  n.setDate(n.getDate() - offset);
+  n.setHours(0, 0, 0, 0);
+  return n;
 }
 function fmtDuration(secs: number) {
   const h = Math.floor(secs / 3600);
@@ -58,8 +64,15 @@ export default function WeeklyView() {
     
   };
 
+  const [copied, setCopied] = useState<"" | "ok" | "fail">("");
   const handleCopy = async () => {
-    try { await navigator.clipboard.writeText(report); } catch {}
+    try {
+      await navigator.clipboard.writeText(report);
+      setCopied("ok");
+    } catch {
+      setCopied("fail");
+    }
+    setTimeout(() => setCopied(""), 2000);
   };
 
   return React.createElement("div", null,
@@ -107,7 +120,10 @@ export default function WeeklyView() {
     loading ? React.createElement("div", { className: "empty-state" }, React.createElement("p", null, "正在加载")) : null,
     showReport && report ? React.createElement("div", { style: { marginTop: 20 } },
       React.createElement("div", { className: "report-preview" }, report),
-      React.createElement("button", { className: "copy-btn", style: { height: 32 }, onClick: handleCopy }, "\uD83D\uDCCB 复制" + (popupMode === "weekly" ? "周报" : "日报"))
+      React.createElement("button", { className: "copy-btn", style: { height: 32 }, onClick: handleCopy }, "\uD83D\uDCCB 复制" + (popupMode === "weekly" ? "周报" : "日报")),
+      copied ? React.createElement("span", { className: "copy-hint " + (copied === "ok" ? "ok" : "fail") },
+        copied === "ok" ? "已复制" : "复制失败，请手动选中")
+        : null
     ) : null,
     showPopup ? React.createElement("div", { className: "popup-overlay", onClick: () => setShowPopup(false) },
       React.createElement("div", { className: "popup-card", onClick: (e: any) => e.stopPropagation() },

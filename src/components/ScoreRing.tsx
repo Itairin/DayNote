@@ -1,4 +1,4 @@
-﻿interface Props {
+interface Props {
   score: number;
   size?: number;
 }
@@ -19,7 +19,7 @@ export default function ScoreRing({ score, size = 160 }: Props) {
     }}>
       <div style={{ position: "relative", width: size, height: size }}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: "rotate(-90deg)" }}>
-          <circle fill="none" stroke="#e8e8ed" strokeWidth="8" cx={size/2} cy={size/2} r={r} />
+          <circle className="score-ring-track" fill="none" stroke="var(--border-light)" strokeWidth="8" cx={size/2} cy={size/2} r={r} />
           <circle fill="none" stroke={color} strokeWidth="8" strokeLinecap="round"
             strokeDasharray={circ} strokeDashoffset={offset} cx={size/2} cy={size/2} r={r} />
         </svg>

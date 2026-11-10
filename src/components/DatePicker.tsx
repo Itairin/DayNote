@@ -10,12 +10,17 @@ interface Props {
 
 const WEEK_HEAD = ["一", "二", "三", "四", "五", "六", "日"];
 
+/** new Date("YYYY-MM-DD") 会按 UTC 解析，东八区下变成前一天，
+ *  跨月时会让选择器头显示上个月。这里手工拆，和 Weekly/Monthly 保持一致。 */
+function parseDate(v: string): Date {
+  const parts = v.split("-").map(Number);
+  if (parts.length < 3 || parts.some((n) => !Number.isFinite(n))) return new Date();
+  return new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1);
+}
+
 export default function DatePicker({ value, onChange }: Props) {
   const [open, setOpen] = useState(false);
-  const [cursor, setCursor] = useState(() => {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? new Date() : date;
-  });
+  const [cursor, setCursor] = useState(() => parseDate(value));
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -39,6 +44,8 @@ export default function DatePicker({ value, onChange }: Props) {
   while (cells.length % 7 !== 0) cells.push(null);
 
   const today = dateKey(new Date());
+  // 未来日期禁用：选到明天只会看到整页 0 分钟，用户会以为数据丢了
+  const maxKey = today;
 
   return (
     <div ref={ref} className="date-picker">
@@ -57,11 +64,13 @@ export default function DatePicker({ value, onChange }: Props) {
               const key = dateKey(cell);
               const active = key === value;
               const isToday = key === today;
+              const future = key > maxKey;
               return (
                 <button
                   key={idx}
+                  disabled={future}
                   className={`date-picker-cell${active ? " active" : ""}${isToday ? " today" : ""}`}
-                  onClick={() => { onChange(key); setOpen(false); }}
+                  onClick={() => { if (!future) { onChange(key); setOpen(false); } }}
                 >
                   {cell.getDate()}
                 </button>

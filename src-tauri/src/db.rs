@@ -1,4 +1,4 @@
-﻿use rusqlite::{Connection, Result};
+use rusqlite::{Connection, Result};
 use std::path::PathBuf;
 
 use std::collections::{BTreeMap, HashMap};
@@ -508,7 +508,11 @@ impl Database {
                 label TEXT,
                 date TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_pomo_date ON pomodoro_sessions(date);",
+            CREATE INDEX IF NOT EXISTS idx_pomo_date ON pomodoro_sessions(date);
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
         )?;
         Ok(())
     }
@@ -599,7 +603,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT date, COALESCE(SUM(duration_secs), 0) as total
              FROM activity_records
-             WHERE date >= date('now', ?1) AND length(window_title) <= 200 AND window_title NOT LIKE '%://%'
+             WHERE date >= date('now', 'localtime', ?1) AND length(window_title) <= 200 AND window_title NOT LIKE '%://%'
              GROUP BY date
              ORDER BY date",
         )?;
@@ -734,10 +738,91 @@ impl Database {
         }))
     }
 
+    // ---------- 偏好持久化 ----------
+    pub fn setting_set(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// 读取全部偏好，供启动时回灌。
+    pub fn settings_all(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare("SELECT key, value FROM settings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for r in rows.flatten() {
+            map.insert(r.0, r.1);
+        }
+        Ok(map)
+    }
+
+    /// 统计将被保留期策略删除的条数（供确认弹窗使用，不执行删除）。
+    pub fn count_older_than(&self, retention_days: i64) -> Result<i64> {
+        let cutoff = format!("-{} days", retention_days);
+        self.conn.query_row(
+            "SELECT COUNT(1) FROM activity_records WHERE date < date('now', 'localtime', ?1)",
+            rusqlite::params![cutoff],
+            |row| row.get(0),
+        )
+    }
+
+    /// 进度落库：把当前进行中的会话写进库。会话切换时用 finish_progress 收尾同一条记录，
+    /// 这样崩溃/断电最多丢 60 秒，而不是一整段。
+    pub fn progress_upsert(
+        &self,
+        window_title: &str,
+        process_name: &str,
+        start_time: &str,
+        end_time: &str,
+        duration_secs: i64,
+        date: &str,
+    ) -> Result<i64> {
+        let cleaned = clean_window_title(window_title);
+        // 同一次会话用 start_time + process_name 作为幂等键
+        let existing: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM activity_records WHERE start_time = ?1 AND process_name = ?2 LIMIT 1",
+                rusqlite::params![start_time, process_name],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(id) = existing {
+            self.conn.execute(
+                "UPDATE activity_records SET window_title = ?1, end_time = ?2, duration_secs = ?3, date = ?4 WHERE id = ?5",
+                rusqlite::params![cleaned, end_time, duration_secs, date, id],
+            )?;
+            Ok(id)
+        } else {
+            self.conn.execute(
+                "INSERT INTO activity_records (window_title, process_name, start_time, end_time, duration_secs, date)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![cleaned, process_name, start_time, end_time, duration_secs, date],
+            )?;
+            Ok(self.conn.last_insert_rowid())
+        }
+    }
+
+    /// 一致性备份：VACUUM INTO 生成的是完整、可独立打开的快照，
+    /// 不像 std::fs::copy 那样可能拷到页级撕裂的半成品。
+    pub fn backup_to(&self, target: &std::path::Path) -> Result<()> {
+        if target.exists() {
+            let _ = std::fs::remove_file(target);
+        }
+        let path = target.to_string_lossy().replace('\'', "''");
+        self.conn.execute_batch(&format!("VACUUM INTO '{}'", path))?;
+        Ok(())
+    }
+
     pub fn delete_older_than(&self, retention_days: i64) -> Result<usize> {
         let cutoff = format!("-{} days", retention_days);
         let affected = self.conn.execute(
-            "DELETE FROM activity_records WHERE date < date('now', ?1)",
+            "DELETE FROM activity_records WHERE date < date('now', 'localtime', ?1)",
             rusqlite::params![cutoff],
         )?;
         Ok(affected)

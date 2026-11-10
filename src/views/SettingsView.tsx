@@ -22,6 +22,7 @@ const [notifyEnabled, setNotifyEnabled] = useState(true);
   const [backupLast, setBackupLast] = useState("");
   const [backupPath, setBackupPath] = useState("");
   const [backupMsg, setBackupMsg] = useState("");
+  const [cleanupMsg, setCleanupMsg] = useState("");
 
   useEffect(() => {
     invoke<string>("get_notification_settings").then((raw) => {
@@ -71,9 +72,30 @@ const [notifyEnabled, setNotifyEnabled] = useState(true);
   };
 
 
+  // 保留天数只改偏好；真正的删除必须用户单独点"立即清理"并二次确认。
   const applyRetention = (days: number) => {
     setRetentionDays(days);
-    invoke("cleanup_old_records", { retentionDays: days }).catch(() => undefined);
+  };
+
+  const runCleanup = async () => {
+    setCleanupMsg("");
+    try {
+      const rawCount = await invoke<string>("count_expired_records", { retentionDays });
+      const parsedCount = JSON.parse(rawCount);
+      const n = parsedCount?.count ?? 0;
+      if (n === 0) {
+        setCleanupMsg("没有超出保留期的记录，无需清理");
+      } else if (!window.confirm(`将永久删除 ${n} 条超过 ${retentionDays} 天的记录，删除后无法恢复。确定继续？`)) {
+        return;
+      } else {
+        const raw = await invoke<string>("cleanup_old_records", { retentionDays });
+        const parsed = JSON.parse(raw);
+        setCleanupMsg(parsed?.error ? "清理失败: " + parsed.error : `已清理 ${parsed.removed ?? n} 条记录`);
+      }
+    } catch (e: any) {
+      setCleanupMsg("清理失败: " + String(e?.message || e));
+    }
+    setTimeout(() => setCleanupMsg(""), 6000);
   };
 
   const addRule = () => {
@@ -186,7 +208,7 @@ const [notifyEnabled, setNotifyEnabled] = useState(true);
         <div className="settings-row">
           <div>
             <label>数据保留</label>
-            <div className="desc">超过的旧记录会被自动清理</div>
+            <div className="desc">只调整保留策略，不会自动删除；删除请用下方"立即清理"</div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {[30, 60, 90, 180].map((n) => (
@@ -199,10 +221,16 @@ const [notifyEnabled, setNotifyEnabled] = useState(true);
         <div className="settings-row">
           <div>
             <label>立即清理</label>
-            <div className="desc">按当前保留天数立刻清理旧记录</div>
+            <div className="desc">按当前保留天数清理旧记录，删除前会先告诉你影响多少条</div>
           </div>
-          <button className="nav-item" onClick={() => applyRetention(retentionDays)}>清理</button>
-        </div>        <div className="settings-row">
+          <button className="nav-item" onClick={runCleanup}>清理</button>
+        </div>
+        {cleanupMsg && (
+          <div style={{ marginTop: 6, fontSize: 12, color: cleanupMsg.indexOf("失败") >= 0 ? "var(--danger)" : "var(--accent, #4caf50)", wordBreak: "break-all" }}>
+            {cleanupMsg}
+          </div>
+        )}
+        <div className="settings-row">
           <div>
             <label>导出全部数据</label>
             <div className="desc" style={{ wordBreak: "break-all" }}>
@@ -252,8 +280,12 @@ const [notifyEnabled, setNotifyEnabled] = useState(true);
                 style={{ display: "none" }}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
-                  if (f) handleImport(f);
                   e.target.value = "";
+                  if (!f) return;
+                  // 选中文件即写库太危险：选错去年的备份会直接合并进当前库，且无法回滚。
+                  if (window.confirm(`将把「${f.name}」合并进当前数据库（重复记录会自动跳过）。确定继续？`)) {
+                    handleImport(f);
+                  }
                 }}
               />
             </label>
@@ -319,7 +351,13 @@ const [notifyEnabled, setNotifyEnabled] = useState(true);
           <input
             type="time"
             value={notifyTime}
-            onChange={(e) => applyNotify(notifyEnabled, e.target.value || "22:00")}
+            onChange={(e) => setNotifyTime(e.target.value)}
+            onBlur={(e) => {
+              const v = e.target.value;
+              // 空值不强行回填，失焦时才提交，避免选小时/分钟的中间态写入错误值
+              if (/^\d{2}:\d{2}$/.test(v)) applyNotify(notifyEnabled, v);
+              else setNotifyTime("22:00");
+            }}
             disabled={!notifyEnabled}
             style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border-light)", fontSize: 13, background: "var(--surface)", color: "var(--text)", outline: "none" }}
           />

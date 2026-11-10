@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 type LayoutMode = "minimal" | "dashboard";
@@ -105,18 +105,21 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
     invoke("set_close_to_tray", { enabled: closeBehavior === "tray" }).catch(() => undefined);
   }, [closeBehavior]);
 
+  // 保留天数只作为"偏好"保存，绝不在这里执行删除。
+  // 之前这个 effect 在挂载瞬间就跑一次真实 DELETE：换机导入一年历史后，
+  // 下次打开应用就把 30 天前的记录全删了，全程无提示无备份。
   useEffect(() => {
-    invoke("cleanup_old_records", { retentionDays }).catch(() => undefined);
+    localStorage.setItem(KEY_RETENTION, String(retentionDays));
   }, [retentionDays]);
 
   useEffect(() => {
     invoke("set_privacy_rules", { rules: privacyRules }).catch(() => undefined);
   }, [privacyRules]);
 
-  useEffect(() => {
-    invoke("set_autostart", { enabled: autoStart }).catch(() => undefined);
-  }, [autoStart]);
-
+  // 自启动：先读后端真实状态，读完之前不写。
+  // 以前挂载时无条件 set_autostart(autoStart)，而 autoStart 默认 false，
+  // 于是首次安装/换版本会把用户已经开好的开机自启静默关掉。
+  const autoStartSynced = useRef(false);
   useEffect(() => {
     invoke<string>("get_autostart").then((raw) => {
       try {
@@ -126,8 +129,15 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
           localStorage.setItem(KEY_AUTOSTART, parsed.enabled ? "1" : "0");
         }
       } catch {}
-    }).catch(() => undefined);
+    }).catch(() => undefined).finally(() => {
+      autoStartSynced.current = true;
+    });
   }, []);
+
+  useEffect(() => {
+    if (!autoStartSynced.current) return;
+    invoke("set_autostart", { enabled: autoStart }).catch(() => undefined);
+  }, [autoStart]);
 
   useEffect(() => {
     const stored = localStorage.getItem(KEY_EXPORT_DIR);

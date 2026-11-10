@@ -121,3 +121,27 @@ html,body,#root{height:100%;font-family:var(--font);background:var(--bg);color:v
 .about-logo { width: 56px; height: 56px; border-radius: 12px; flex-shrink: 0; }
 .link-btn { display: inline-flex; align-items: center; gap: 8px; }
 .link-btn-icon { width: 18px; height: 18px; display: inline-block; vertical-align: middle; }
+/* === 报告编辑器 === */
+.report-editor{
+  width:100%;min-height:420px;resize:vertical;padding:20px;
+  background:var(--surface);border:1px solid var(--border-light);border-radius:var(--radius);
+  color:var(--text);font-size:14px;line-height:1.7;
+  font-family:'SF Mono',Menlo,Consolas,monospace;
+  outline:none;user-select:text;-webkit-user-select:text
+}
+.report-editor:focus{border-color:var(--accent)}
+.copy-hint{font-size:12px}
+.copy-hint.ok{color:var(--success,#30b94e)}
+.copy-hint.fail{color:var(--danger,#ff453a)}
+
+/* 日报是给人选中复制的，全局 user-select:none 必须在这里放开 */
+.report-preview, .report-editor, input, textarea, .timeline-title, .timeline-sub{
+  user-select:text;-webkit-user-select:text
+}
+
+/* === 焦点可见性：之前全站没有 :focus 样式，键盘用户完全走不通 === */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.nav-item:disabled, .copy-btn:disabled, button:disabled{opacity:.45;cursor:not-allowed}
+
+/* === 深色主题下评分环底环（原来写死 #e8e8ed，暗色里是一条刺眼白圈）=== */
+.score-ring-track{stroke:var(--border-light)}
