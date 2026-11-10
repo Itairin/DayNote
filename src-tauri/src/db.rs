@@ -137,6 +137,13 @@ pub fn app_display_name(process_name: &str, title: &str) -> String {
     if m(&["sourcetree"], &["sourcetree"]) { return "Sourcetree".to_string(); }
     if m(&["fork.exe"], &["fork - "]) { return "Fork".to_string(); }
     if m(&["tortoisegit"], &["tortoisegit"]) { return "TortoiseGit".to_string(); }
+    if m(&["todesk"], &["todesk"]) { return "ToDesk".to_string(); }
+    if m(&["sunloginclient"], &["向日葵"]) { return "向日葵".to_string(); }
+    if m(&["anydesk"], &["anydesk"]) { return "AnyDesk".to_string(); }
+    if m(&["devecostudio", "deveco"], &["deveco studio"]) { return "DevEco Studio".to_string(); }
+    if m(&["harness"], &["deepseek harness"]) { return "DeepSeek Harness".to_string(); }
+    if m(&["cmder", "conemu"], &["cmder", "conemu"]) { return "Cmder".to_string(); }
+    if m(&["mintty", "git-bash"], &["git bash"]) { return "Git Bash".to_string(); }
     if m(&["unityhub"], &["unity hub"]) { return "Unity Hub".to_string(); }
     if m(&["unity.exe"], &["- unity "]) { return "Unity".to_string(); }
     if m(&["unrealeditor", "ue4editor", "ue5editor"], &["unreal editor"]) { return "Unreal Engine".to_string(); }
@@ -363,6 +370,7 @@ pub fn app_category(app_name: &str) -> &'static str {
         | "DBeaver" | "Navicat" | "Postman" | "Insomnia" | "Apifox"
         | "Fiddler" | "Wireshark" | "Docker Desktop"
         | "GitHub Desktop" | "Sourcetree" | "Fork" | "TortoiseGit"
+        | "DevEco Studio" | "DeepSeek Harness"
         | "Unity" | "Unity Hub" | "Unreal Engine" | "Godot" | "Blender"
         | "MATLAB" | "RStudio" | "Jupyter" | "Anaconda" => "开发",
 
@@ -374,7 +382,7 @@ pub fn app_category(app_name: &str) -> &'static str {
         // 沟通
         "微信" | "企业微信" | "QQ" | "TIM" | "钉钉" | "飞书" | "腾讯会议"
         | "Zoom" | "Microsoft Teams" | "Slack" | "Discord" | "Telegram" | "WhatsApp"
-        | "LINE" => "沟通",
+        | "LINE" | "ToDesk" | "向日葵" | "AnyDesk" => "沟通",
 
         // 邮件
         "Outlook" | "Thunderbird" | "Foxmail" | "网易邮箱大师" | "邮件" => "邮件",
@@ -396,7 +404,8 @@ pub fn app_category(app_name: &str) -> &'static str {
 
         // 命令行
         "Windows Terminal" | "WezTerm" | "Alacritty" | "PowerShell" | "命令提示符"
-        | "Xshell" | "MobaXterm" | "PuTTY" | "FinalShell" | "Tabby" => "命令行",
+        | "Xshell" | "MobaXterm" | "PuTTY" | "FinalShell" | "Tabby"
+        | "Cmder" | "Git Bash" => "命令行",
 
         // AI
         "ChatGPT" | "Claude" | "Copilot" | "豆包" | "Kimi" | "通义千问" | "文心一言"

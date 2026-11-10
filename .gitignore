@@ -36,3 +36,6 @@ Thumbs.db
 # === 临时截图 ===
 _window_check.png
 _*.png
+# === 本地证书/临时文件（勿提交） ===
+_steamtools_ca.pem
+_*.pem
